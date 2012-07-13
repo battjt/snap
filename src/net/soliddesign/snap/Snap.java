@@ -1,28 +1,22 @@
 package net.soliddesign.snap;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.RandomAccessFile;
+import java.io.*;
 import java.math.BigInteger;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-import com.sun.jna.Library;
-import com.sun.jna.Native;
-import com.sun.jna.Platform;
+import com.sun.jna.*;
 
 public class Snap {
-  File hashDir;
-  File snapDir;
-  File baseDir;
+  /** base of all the snapshots */
+  private File baseDir;
+  /** directory in baseDir of the data named by hashvalue (content addressable) */
+  private File hashDir;
+  /** snapshot directory */
+  private File snapDir;
 
   public Snap(File base, String label) {
     baseDir = base;
@@ -31,6 +25,7 @@ public class Snap {
     snapDir = new File(base, label);
   }
 
+  /** @return hash of contents of f */
   private String hash(File f) throws IOException {
     InputStream in = new BufferedInputStream(new FileInputStream(f));
     MessageDigest digest;
@@ -40,8 +35,7 @@ public class Snap {
       throw new Error("Failed to find checksum algorythm.", e);
     }
     int l;
-    byte[] buf = new byte[4096];
-    // FIXME skip around with large files
+    byte[] buf = new byte[BLOCK_SIZE];
     while ((l = in.read(buf)) > 0) {
       digest.update(buf, 0, l);
     }
@@ -54,40 +48,34 @@ public class Snap {
     return String.format("%0" + (bytes.length << 1) + "X", bi);
   }
 
-  private void copy(InputStream in, OutputStream out) throws IOException {
-    byte[] buf = new byte[4096];
-    int l;
-    while ((l = in.read(buf)) >= 0) {
-      out.write(buf, 0, l);
-    }
-  }
-
-  private void copy(File in, File out) throws IOException {
-    // System.err.println("cp " + in + " " + out);
-
-    BufferedInputStream inStream = new BufferedInputStream(new FileInputStream(
-        in));
-    BufferedOutputStream outStream = new BufferedOutputStream(
-        new FileOutputStream(out));
-    copy(inStream, outStream);
-    inStream.close();
-    outStream.close();
-  }
-
   /** copy if not there. Either way, return filename with content. */
-  private File copyToRepo(File from) throws IOException {
-    String hash = hash(from);
-    File base = new File(hashDir, hash);
-    int i = 0;
-    File target = new File(base + "." + i++);
-    while (target.exists()) {
-      if (equalContent(from, target)) {
-        return target;
+  private File copyToRepo(File from) {
+    try {
+      String hash = hash(from);
+      File base = new File(hashDir, hash);
+      int i = 0;
+      File target = new File(base + "." + i++);
+      while (target.exists()) {
+        if (equalishContent(from, target)) {
+          return target;
+        }
+        target = new File(base + "." + i++);
       }
-      target = new File(base + "." + i++);
+      // ok it doesn't exist, so really copy
+      InputStream inStream = new FileInputStream(from);
+      OutputStream outStream = new FileOutputStream(target);
+      // FIXME replace with a no userspace copy.
+      byte[] buf = new byte[4096];
+      int l;
+      while ((l = inStream.read(buf)) >= 0) {
+        outStream.write(buf, 0, l);
+      }
+      inStream.close();
+      outStream.close();
+      return target;
+    } catch (IOException e) {
+      throw new Error("failed to copy: " + from, e);
     }
-    copy(from, target);
-    return target;
   }
 
   private void ensure(File d) {
@@ -98,53 +86,35 @@ public class Snap {
 
   final int BLOCK_SIZE = 4096;
 
-  private boolean equalContent(File a, File b) throws IOException {
+  /**
+   * given that the hash is the same, are the files close enough to be
+   * considered the same?
+   */
+  private boolean equalishContent(File a, File b) throws IOException {
     // check for existence and length
     if (!a.exists() || !b.exists() || a.length() != b.length()) {
       return false;
     }
-    // Check last two blocks
-    int len = a.length() > BLOCK_SIZE * 10 ? (int) (BLOCK_SIZE + a.length()
-        % BLOCK_SIZE) : 0;
-    if (len > 0 && !Arrays.equals(readLast(a, len), readLast(b, len)))
-      return false;
-    // Check rest
-    BufferedInputStream ais = new BufferedInputStream(new FileInputStream(a),
-        BLOCK_SIZE);
-    BufferedInputStream bis = new BufferedInputStream(new FileInputStream(b),
-        BLOCK_SIZE);
+    if (a.length() == 0) {
+      return true;
+    }
+    // Check first block
+    InputStream ais = new FileInputStream(a);
+    InputStream bis = new FileInputStream(b);
     try {
-      return a.length() == 0 || equalContent(ais, bis, a.length() - len);
+      byte[] abuf = new byte[BLOCK_SIZE];
+      byte[] bbuf = new byte[BLOCK_SIZE];
+      int alen, blen;
+      alen = ais.read(abuf);
+      blen = bis.read(bbuf);
+      if (alen != blen || !Arrays.equals(abuf, bbuf)) {
+        return false;
+      }
+      return true;
     } finally {
       ais.close();
       bis.close();
     }
-  }
-
-  private byte[] readLast(File a, int len) throws FileNotFoundException,
-      IOException {
-    byte[] buf = new byte[len];
-    RandomAccessFile aRAF = new RandomAccessFile(a, "r");
-    aRAF.seek(a.length() - buf.length);
-    aRAF.read(buf);
-    return buf;
-  }
-
-  private boolean equalContent(InputStream a, InputStream b, long size)
-      throws IOException {
-    byte[] abuf = new byte[BLOCK_SIZE];
-    byte[] bbuf = new byte[BLOCK_SIZE];
-    int alen, blen;
-    long done = 0;
-    do {
-      alen = a.read(abuf);
-      blen = b.read(bbuf);
-      if (alen != blen || !Arrays.equals(abuf, bbuf)) {
-        return false;
-      }
-      done += alen;
-    } while (done < size); // FIXME lazy
-    return true;
   }
 
   public static void main(String[] argv) throws Exception {
@@ -157,20 +127,43 @@ public class Snap {
     new Snap(base, label).snap(new File(argv[0]));
   }
 
-  private void snap(File from) throws IOException {
+  synchronized private void snap(File from) throws IOException {
     snap(from, snapDir);
+    while (count > 0) {
+      try {
+        wait();
+      } catch (InterruptedException e) {
+        throw new Error("Interrupted", e);
+      }
+    }
+    queue.shutdown();
   }
 
-  private void snap(File from, File to) throws IOException {
+  ExecutorService queue = Executors.newFixedThreadPool(Runtime.getRuntime()
+      .availableProcessors() * 2);
+  int count = 0;
+
+  private void snap(File from, File to) {
+    ensure(to);
     if (from.isDirectory()) {
-      to = new File(to, from.getName());
-      for (File file : from.listFiles()) {
-        snap(file, to);
+      final File toDir = new File(to, from.getName());
+
+      synchronized (Snap.this) {
+        for (final File file : from.listFiles()) {
+          count++;
+          queue.execute(new Runnable() {
+            public void run() {
+              snap(file, toDir);
+              synchronized (Snap.this) {
+                count--;
+                Snap.this.notifyAll();
+              }
+            }
+          });
+        }
       }
     } else {
-      ensure(to);
-      to = new File(to, from.getName());
-      hardlink(copyToRepo(from), to);
+      hardlink(copyToRepo(from), new File(to, from.getName()));
     }
   }
 
@@ -178,16 +171,17 @@ public class Snap {
     CLibrary INSTANCE = (CLibrary) Native.loadLibrary(
         (Platform.isWindows() ? "msvcrt" : "c"), CLibrary.class);
 
+    boolean CreateHardLink(String lpFileName, String lpExistingFileName,
+        Object lpSecurityAttributes);
+
     void link(String from, String to);
+
   }
 
-  /**
-   * hard link
-   */
-  private void hardlink(File from, File to) throws IOException {
-    // System.err.println("ln \"" + from + "\" \"" + to);
-    // Runtime.getRuntime().exec(
-    // new String[] { "ln", from.getAbsolutePath(), to.getAbsolutePath() });
-    CLibrary.INSTANCE.link(from.getPath(), to.getPath());
+  private void hardlink(File from, File to) {
+    if (Platform.isWindows())
+      CLibrary.INSTANCE.CreateHardLink(to.getPath(), from.getPath(), null);
+    else
+      CLibrary.INSTANCE.link(from.getPath(), to.getPath());
   }
 }
