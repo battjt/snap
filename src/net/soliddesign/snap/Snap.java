@@ -23,29 +23,27 @@ public class Snap {
     hashDir = new File(baseDir, "hash");
     ensure(hashDir);
     snapDir = new File(base, label);
+    ensure(snapDir);
   }
 
-  /** @return hash of contents of f */
-  private String hash(File f) throws IOException {
+  /** @return hash string of contents of f */
+  private static String hash(File f) throws IOException {
     InputStream in = new BufferedInputStream(new FileInputStream(f));
     MessageDigest digest;
     try {
       digest = MessageDigest.getInstance("md5");
     } catch (NoSuchAlgorithmException e) {
-      throw new Error("Failed to find checksum algorythm.", e);
+      throw new Error("Failed to find checksum algorithm.", e);
     }
-    int l;
+    int len;
     byte[] buf = new byte[BLOCK_SIZE];
-    while ((l = in.read(buf)) > 0) {
-      digest.update(buf, 0, l);
+    while ((len = in.read(buf)) > 0) {
+      digest.update(buf, 0, len);
     }
     in.close();
-    return toHex(digest.digest());
-  }
-
-  public static String toHex(byte[] bytes) {
-    BigInteger bi = new BigInteger(1, bytes);
-    return String.format("%0" + (bytes.length << 1) + "X", bi);
+    byte[] bytes = digest.digest();
+    return String.format("%0" + (bytes.length * 2) + "X", new BigInteger(1,
+        bytes));
   }
 
   /** copy if not there. Either way, return filename with content. */
@@ -64,8 +62,8 @@ public class Snap {
       // ok it doesn't exist, so really copy
       InputStream inStream = new FileInputStream(from);
       OutputStream outStream = new FileOutputStream(target);
-      // FIXME replace with a no userspace copy.
-      byte[] buf = new byte[4096];
+      // FIXME replace with a no userspace copy routine.
+      byte[] buf = new byte[BLOCK_SIZE];
       int l;
       while ((l = inStream.read(buf)) >= 0) {
         outStream.write(buf, 0, l);
@@ -78,19 +76,21 @@ public class Snap {
     }
   }
 
-  private void ensure(File d) {
+  /** ensure that a directory exists */
+  static private void ensure(File d) {
     if (!d.exists()) {
       d.mkdirs();
     }
   }
 
-  final int BLOCK_SIZE = 4096;
+  /** should correspond to block size of file system. Used for copying. */
+  static final int BLOCK_SIZE = 4096;
 
   /**
    * given that the hash is the same, are the files close enough to be
    * considered the same?
    */
-  private boolean equalishContent(File a, File b) throws IOException {
+  static private boolean equalishContent(File a, File b) throws IOException {
     // check for existence and length
     if (!a.exists() || !b.exists() || a.length() != b.length()) {
       return false;
@@ -98,7 +98,7 @@ public class Snap {
     if (a.length() == 0) {
       return true;
     }
-    // Check first block
+    // Check first block, but count on hash for rest.
     InputStream ais = new FileInputStream(a);
     InputStream bis = new FileInputStream(b);
     try {
@@ -139,14 +139,14 @@ public class Snap {
     queue.shutdown();
   }
 
-  ExecutorService queue = Executors.newFixedThreadPool(Runtime.getRuntime()
-      .availableProcessors() * 2);
-  int count = 0;
+  private ExecutorService queue = Executors.newFixedThreadPool(Runtime
+      .getRuntime().availableProcessors() * 2);
+  private int count = 0;
 
   private void snap(File from, File to) {
-    ensure(to);
     if (from.isDirectory()) {
       final File toDir = new File(to, from.getName());
+      ensure(to);
 
       synchronized (Snap.this) {
         for (final File file : from.listFiles()) {
@@ -178,7 +178,7 @@ public class Snap {
 
   }
 
-  private void hardlink(File from, File to) {
+  static private void hardlink(File from, File to) {
     if (Platform.isWindows())
       CLibrary.INSTANCE.CreateHardLink(to.getPath(), from.getPath(), null);
     else
