@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<project name="Snap">
+	<target name="snap.jar">
+		<jar destfile="/tmp/snap.jar" filesetmanifest="mergewithoutmain">
+			<manifest>
+				<attribute name="Main-Class" value="net.soliddesign.snap.Snap" />
+				<attribute name="Class-Path" value="." />
+			</manifest>
+			<fileset dir="/home/battjt/workspace/Snap/bin" />
+			<zipfileset excludes="META-INF/*.SF" src="/home/battjt/workspace/Snap/lib/jna.jar" />
+			<zipfileset excludes="META-INF/*.SF" src="/home/battjt/workspace/Snap/lib/platform.jar" />
+		</jar>
+	</target>
+</project>
