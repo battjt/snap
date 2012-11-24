@@ -3,8 +3,22 @@ snap
 
 This is a snap shot tool useful for backups.
 
-Usage: java net.soliddesign.snap.Snap from_dir snapshot_dir [label]
+Usage: snap from_dir snapshot_dir label_dir
 
-The default label is a time stamp.  The contents of from_dir will be copied to snapshot_dir/hash.  A directory will be made in snapshot_dir representing this snapshot and a link will be made from there to the snapshot_dir/hash.
+The contents of from_dir will be copied to snapshot_dir/hash.  A directory label_dir will be made in snapshot_dir representing this snapshot and a links will be made from there to the snapshot_dir/hash.
 
-FIXME: linked lists are not supported
+[The Java version was the prototype.  I'm  unhappy at how difficult it is to do systems programming in Java, so I switched to C.  Some things were much easier, like SHA1(mmap(NULL, fd)), but some bugs crept up, like mutable strings and missing null terminators.]
+
+The following are features that I need.
+
+FIXME:
+* update timestamps for existing hash files
+* purge old crap
+
+I don't need the following for my personal usage, but I'm sure someone will, so I'm listing it like I care.
+
+TODO:
+* documentation
+* support other file types, like symbolic links
+* do something with permissions
+* extended attributes
