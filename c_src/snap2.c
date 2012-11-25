@@ -2,6 +2,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <openssl/sha.h>
+#include <pthread_workqueue.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,8 +12,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <pthread.h>
-#include <pthread_workqueue.h>
+#include <utime.h>
 
 typedef int boolean;
 
@@ -64,7 +65,7 @@ void to_hex(int length, unsigned char hash[], char hex[]) {
  */
 void copyToRepo(struct snap *env, char * from, struct stat *from_stat,
 		char *target) {
-	msg(env, 10, "     copyToRepo  %s\n", from);
+	msg(env, 1, "%s\n", from);
 	int from_fd = open(from, O_RDONLY);
 	void* map = mmap(NULL, from_stat->st_size, PROT_READ, MAP_SHARED, from_fd,
 			0);
@@ -95,13 +96,23 @@ void copyToRepo(struct snap *env, char * from, struct stat *from_stat,
 		int target_fd = open(target, O_WRONLY | O_CREAT, 0x777);
 		if (target_fd < 0) {
 			int e = errno;
-			msg(env, 0, "failed to write %s\n  %d %s\n", target, e,
+			msg(env, 0, "failed to open for write %s %d %s\n", target, e,
 					strerror(e));
 		}
 		while ((len = read(from_fd, buf, sizeof(buf))) > 0) {
-			write(target_fd, buf, len);
+			if (write(target_fd, buf, len) < 0) {
+				int e = errno;
+				msg(env, 0, "failed to write %s: %d: %s\n", target, e,
+						strerror(e));
+			}
 		}
 		close(target_fd);
+	} else {
+		if (utime(target, NULL )) {
+			int e = errno;
+			msg(env, 0, "failed to update time on %s: %d: %s\n", target, e,
+					strerror(e));
+		}
 	}
 	close(from_fd);
 }
@@ -175,7 +186,11 @@ void snap(struct snap *env, char* from, char *to) {
 		char copy[strlen(env->hash_dir) + FILENAME_MAX + 2];
 		copyToRepo(env, from, &statb, copy);
 		msg(env, 3, "link: %s -> %s\n", copy, to);
-		link(copy, to);
+		if (link(copy, to)) {
+			int e = errno;
+			msg(env, 0, "failed to link %s to %s: %d: %s\n", copy, to, e,
+					strerror(e));
+		}
 	} else {
 		msg(env, 0, "Unhandled file type: %s\n", from);
 	}
@@ -187,7 +202,7 @@ int main(int argc, char *argv[]) {
 		exit(-1);
 	}
 	struct snap env;
-	env.log_level = 100;
+	env.log_level = 2;
 	env.hash_dir = alloca(strlen(argv[1]) + strlen("/hash")+1);
 	strcat(strcpy(env.hash_dir, argv[1]), "/hash");
 	env.try_to_link = 1;
