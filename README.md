@@ -11,14 +11,13 @@ The contents of from_dir will be copied to snapshot_dir/hash.  A directory label
 
 The following are features that I need.
 
-FIXME:
-* update timestamps for existing hash files
-* purge old crap
-
 I don't need the following for my personal usage, but I'm sure someone will, so I'm listing it like I care.
 
 TODO:
+* better error handling (currently I only handle errors that I seen, not errors that are possible)
 * documentation
-* support other file types, like symbolic links
-* do something with permissions
-* extended attributes
+* support other file types
+** symbolic links
+** devices
+** permissions
+** extended attributes
