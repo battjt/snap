@@ -16,12 +16,13 @@
 
 typedef int boolean;
 
+const char ZERO[] = "0";
 /*
  * Structure to represent a single snapshot.  This stuff could be global, but due to my upbringing I'm unable to use globals.
  */
 struct snap {
-  char * hash_dir;
-  char *snap_dir;
+  char hash_dir[PATH_MAX];
+  char snap_dir[PATH_MAX];
   int verbosity;
   boolean try_to_link;
   int log_level;
@@ -65,32 +66,36 @@ void to_hex(int length, unsigned char hash[], char hex[]) {
  *  Copy (link if we can) the file to the repo returning the hash filename.
  *  If it's already there, just return the name.
  */
-void copyToRepo(struct snap *env, char * from, struct stat *from_stat,
+int copyToRepo(struct snap *env, char * from, struct stat *from_stat,
     char *target) {
   msg(env, 1, "%d\t%s\n", from_stat->st_size, from);
-
+  char hex[SHA_DIGEST_LENGTH * 2 + 1];
   // get sha1 of file contents to use as a name in repo
   int from_fd = open(from, O_RDONLY);
   if (from_fd < 1) {
     int e = errno;
     msg(env, 0, "Failed to open %s.  %d %s\n", from, e, strerror(e));
-    return;
+    return 2;
   }
-  void* map = mmap(NULL, from_stat->st_size, PROT_READ, MAP_SHARED, from_fd, 0);
-  if (map == MAP_FAILED ) {
-    int e = errno;
-    msg(env, 0, "error mapping file: %s\n  %d %s\n", from, e, strerror(e));
-    close(from_fd);
-    return;
+  if (from_stat->st_size == 0) {
+    // empty file.  Can't map that!
+    strcpy(hex, ZERO);
+  } else {
+    void* map = mmap(NULL, from_stat->st_size, PROT_READ, MAP_SHARED, from_fd,
+        0);
+    if (map == MAP_FAILED ) {
+      int e = errno;
+      msg(env, 0, "error mapping file: %s\n  %d %s\n", from, e, strerror(e));
+      close(from_fd);
+      return 2;
+    }
+    unsigned char hash[SHA_DIGEST_LENGTH];
+    SHA1(map, from_stat->st_size, hash);
+    munmap(map, from_stat->st_size);
+
+    // convert to char *
+    to_hex(SHA_DIGEST_LENGTH, hash, hex);
   }
-  unsigned char hash[SHA_DIGEST_LENGTH];
-  SHA1(map, from_stat->st_size, hash);
-  munmap(map, from_stat->st_size);
-
-  // convert to char *
-  char hex[SHA_DIGEST_LENGTH * 2 + 1];
-  to_hex(SHA_DIGEST_LENGTH, hash, hex);
-
   // convert to filename
   strcat(strcat(strcpy(target, env->hash_dir), "/"), hex);
   msg(env, 10, "     target %s\n", target);
@@ -101,7 +106,7 @@ void copyToRepo(struct snap *env, char * from, struct stat *from_stat,
     if (env->try_to_link) {
       if (link(from, target) == 0) {
         close(from_fd);
-        return;
+        return 0;
       }
       msg(env, 1, "Failed to link, copying instead %s to %s\n", from, target);
     }
@@ -137,6 +142,7 @@ void copyToRepo(struct snap *env, char * from, struct stat *from_stat,
     }
   }
   close(from_fd);
+  return 0;
 }
 
 /* allocate directory if it's not there */
@@ -150,8 +156,8 @@ void ensure_dir(struct snap* env, char* dir) {
 
 struct snapdir {
   struct snap *env;
-  char *from;
-  char *to;
+  char from[PATH_MAX];
+  char to[PATH_MAX];
 };
 
 void snap(struct snap *env, char* from, char *to);
@@ -177,8 +183,8 @@ void snapDir_task_fn(void *data) {
     msg(d->env, 0, "Failed to open %s.\n  %d %s", d->from, e, strerror(e));
   } else {
     struct dirent* de;
-    char to_new[strlen(d->to) + FILENAME_MAX + 2];
-    char from_new[strlen(d->from) + FILENAME_MAX + 2];
+    char to_new[PATH_MAX];
+    char from_new[PATH_MAX];
     ensure_dir(d->env, d->to);
     while ((de = readdir(dir)) != NULL ) {
       if (strncmp(".", de->d_name, 2) && strncmp("..", de->d_name, 3)) {
@@ -191,8 +197,6 @@ void snapDir_task_fn(void *data) {
   }
 
   incrementOutstandingTasks(d->env, -1);
-  free(d->from);
-  free(d->to);
   free(d);
 }
 /*
@@ -212,23 +216,23 @@ void snap(struct snap *env, char* from, char *to) {
     incrementOutstandingTasks(env, 1);
     msg(env, 3, "     dir  %s\n", from);
     struct snapdir *data = malloc(sizeof(struct snapdir));
-    char *copy(char *s) {
-      return strcpy(malloc(strlen(s) + 1), s);
-    }
-    *data = (struct snapdir ) { env, copy(from), copy(to) };
+    data->env = env;
+    strcpy(data->to, to);
+    strcpy(data->from, from);
     if (pthread_workqueue_additem_np(env->queue, snapDir_task_fn, data, NULL,
         NULL )) {
       int e = errno;
       msg(env, 0, "Failed to submit task %d %s\n", e, strerror(e));
     }
   } else if (S_ISREG(statb.st_mode)) {
-    char copy[strlen(env->hash_dir) + FILENAME_MAX + 2];
-    copyToRepo(env, from, &statb, copy);
-    msg(env, 5, "link: %s -> %s\n", copy, to);
-    if (link(copy, to)) {
-      int e = errno;
-      msg(env, 0, "failed to link %s to %s: %d: %s\n", copy, to, e,
-          strerror(e));
+    char copy[PATH_MAX];
+    if (!copyToRepo(env, from, &statb, copy)) {
+      msg(env, 5, "link: %s -> %s\n", copy, to);
+      if (link(copy, to)) {
+        int e = errno;
+        msg(env, 0, "failed to link %s to %s: %d: %s\n", copy, to, e,
+            strerror(e));
+      }
     }
   } else {
     msg(env, 0, "Unhandled file type: %s\n", from);
@@ -244,8 +248,10 @@ int main(int argc, char *argv[]) {
   }
   struct snap env;
   env.log_level = atoi(argv[1]);
-  env.snap_dir = realpath(argv[2], alloca(4096));
-  env.hash_dir = alloca(strlen(argv[2]) + strlen("/hash")+1);
+  if (!realpath(argv[2], env.snap_dir)) {
+    msg(&env, 0, "Failed to find real path of %s\n", argv[2]);
+    exit(-1);
+  }
   strcat(strcpy(env.hash_dir, argv[2]), "/hash");
   env.try_to_link = 1;
   env.outstandingTasks = 0;
@@ -261,12 +267,15 @@ int main(int argc, char *argv[]) {
     msg(&env, 0, "error pthread_cond_init: %s\n", strerror(e));
   }
 
+  char to[PATH_MAX];
   ensure_dir(&env, argv[2]);
   ensure_dir(&env, env.hash_dir);
+  close(
+      open(strcat(strcat(strcpy(to, env.hash_dir), "/"), ZERO), O_CREAT | O_WRONLY,
+          0777));
 
   pthread_workqueue_create_np(&env.queue, NULL );
 
-  char to[strlen(argv[2]) + strlen(argv[3]) + 2];
   strcat(strcat(strcpy(to, argv[2]), "/"), argv[3]);
   int i;
   for (i = 4; i < argc; i++) {
