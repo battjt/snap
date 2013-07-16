@@ -18,7 +18,7 @@ TODO:
 * better error handling (currently I only handle errors that I have seen, not errors that are possible)
 * documentation
 * support other file types
-** symbolic links
-** devices
-** permissions
-** extended attributes
+ * symbolic links
+ * devices
+ * permissions
+ * extended attributes
